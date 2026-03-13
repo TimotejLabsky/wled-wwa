@@ -10,7 +10,29 @@
 
   </p>
 
-# Welcome to my project WLED! ✨
+# WLED WWA Fork ✨
+
+> **This is a fork of [WLED](https://github.com/Aircoookie/WLED) with full SK6812 WWA (Warm White + White + Amber) support.**
+>
+> Upstream WLED's WWA type (21) ignores the amber channel (hardcoded to 0). This fork adds proper amber blending based on color temperature — amber LEDs activate at warm color temperatures, providing a richer warm glow.
+
+## What's changed
+
+- **Amber channel driven by CCT position** — amber scales up proportionally when the color temperature slider is set to warm (low CCT), and fades to zero at neutral/cold temperatures
+- **Label updated** from "WS281x WWA" to "SK6812 WWA"
+- **`getPixelColor` fixed** — reconstructs white from max of all 3 channels instead of discarding amber
+
+### Pre-built binary
+
+Download from the [Releases](https://github.com/TimotejLabsky/wled-wwa/releases) page, or build from the `wwa-support` branch.
+
+Flash via OTA: `curl -F "update=@WLED_0.15.3-wwa_ESP32.bin" http://<wled-ip>/update`
+
+---
+
+*Original README below.*
+
+---
 
 A fast and feature-rich implementation of an ESP8266/ESP32 webserver to control NeoPixel (WS2812B, WS2811, SK6812) LEDs or also SPI based chipsets like the WS2801 and APA102!
 

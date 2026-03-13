@@ -241,7 +241,12 @@ void BusDigital::show() {
         // TODO: there is an issue if CCT is calculated from RGB value (_cct==-1), we cannot do that with double buffer
         Bus::_cct = _data[offset+channels-1];
         Bus::calculateCCT(c, cctWW, cctCW);
-        if (_type == TYPE_WS2812_WWA) c = RGBW32(cctWW, cctCW, 0, W(c)); // may need swapping
+        if (_type == TYPE_WS2812_WWA) {
+          // Amber blends in at warm color temperatures (low CCT)
+          // Amber peaks when fully warm (cctWW=255, cctCW=0), fades to 0 at neutral/cold
+          uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
+          c = RGBW32(cctWW, cctCW, amber, W(c));
+        }
       }
       unsigned pix = i;
       if (_reversed) pix = _len - pix -1;
@@ -326,7 +331,11 @@ void IRAM_ATTR BusDigital::setPixelColor(unsigned pix, uint32_t c) {
       uint8_t cctWW = 0, cctCW = 0;
       Bus::calculateCCT(c, cctWW, cctCW);
       wwcw = (cctCW<<8) | cctWW;
-      if (_type == TYPE_WS2812_WWA) c = RGBW32(cctWW, cctCW, 0, W(c)); // may need swapping
+      if (_type == TYPE_WS2812_WWA) {
+        // Amber blends in at warm color temperatures (low CCT)
+        uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
+        c = RGBW32(cctWW, cctCW, amber, W(c));
+      }
     }
     PolyBus::setPixelColor(_busPtr, _iType, pix, c, co, wwcw);
   }
@@ -360,7 +369,9 @@ uint32_t IRAM_ATTR BusDigital::getPixelColor(unsigned pix) const {
       }
     }
     if (_type == TYPE_WS2812_WWA) {
-      uint8_t w = R(c) | G(c);
+      // Reconstruct white from max of WW, CW, and Amber channels
+      uint8_t w = R(c) > G(c) ? R(c) : G(c);
+      if (B(c) > w) w = B(c);
       c = RGBW32(w, w, 0, w);
     }
     return c;
@@ -400,7 +411,7 @@ std::vector<LEDType> BusDigital::getLEDTypes() {
     {TYPE_SM16825,       "D",  PSTR("SM16825 RGBCW")},
     {TYPE_WS2812_1CH_X3, "D",  PSTR("WS2811 White")},
     //{TYPE_WS2812_2CH_X3, "D",  PSTR("WS281x CCT")}, // not implemented
-    {TYPE_WS2812_WWA,    "D",  PSTR("WS281x WWA")}, // amber ignored
+    {TYPE_WS2812_WWA,    "D",  PSTR("SK6812 WWA")},
     {TYPE_WS2801,        "2P", PSTR("WS2801")},
     {TYPE_APA102,        "2P", PSTR("APA102")},
     {TYPE_LPD8806,       "2P", PSTR("LPD8806")},

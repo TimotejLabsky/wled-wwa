@@ -232,13 +232,18 @@ void BusDigital::applyBriLimit(uint8_t newBri) {
     for (unsigned i = 0; i < hwLen; i++) {
       uint8_t co = _colorOrderMap.getPixelColorOrder(i+_start, _colorOrder); // need to revert color order for correct color scaling and CCT calc in case white is swapped
       uint32_t c = PolyBus::getPixelColor(_busPtr, _iType, i, co); // Note: if ABL would be calculated as a seperate loop (as it was before) it is slower but could use original color, making it more color-accurate
+      uint8_t cctWW = 0, cctCW = 0;
       if (hasCCT()) {
-        uint8_t cctWW, cctCW;
         Bus::calculateCCT(c, cctWW, cctCW); // calculate CCT before fade (more accurate) | Note: if using "accurate" white calculation mode, approximateKelvinFromRGB can be very inaccurate (white is subtracted)
         wwcw = ((cctCW + 1) * newBri) & 0xFF00; // apply brightness to CCT (leave it in upper byte for 16bit NeoPixelBus value)
         wwcw |= ((cctWW + 1) * newBri) >> 8;
       }
       c = color_fade(c, newBri, true); // apply additional dimming  note: using inline version is a bit faster but overhead of getPixelColor() dominates the speed impact by far
+      if (hasCCT() && _type == TYPE_WS2812_WWA) {
+        // SK6812 WWA fork: derive amber from CCT delta (raw cctWW/cctCW), use brightness-scaled WW/CW from wwcw
+        uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
+        c = RGBW32(wwcw & 0xFF, wwcw >> 8, amber, W(c));
+      }
       PolyBus::setPixelColor(_busPtr, _iType, i, c, co, wwcw); // repaint all pixels with new brightness
     }
   }
@@ -278,7 +283,11 @@ void IRAM_ATTR BusDigital::setPixelColor(unsigned pix, uint32_t c) {
   if (hasCCT()) {
     wwcw = ((cctCW + 1) * _bri) & 0xFF00; // apply brightness to CCT (store CW in upper byte)
     wwcw |= ((cctWW + 1) * _bri) >> 8;
-    if (_type == TYPE_WS2812_WWA) c = RGBW32(wwcw, wwcw >> 8, 0, W(c)); // ww,cw, 0, w
+    if (_type == TYPE_WS2812_WWA) {
+      // SK6812 WWA fork: derive amber from CCT delta (raw cctWW/cctCW), use brightness-scaled WW/CW from wwcw
+      uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
+      c = RGBW32(wwcw & 0xFF, wwcw >> 8, amber, W(c)); // ww, cw, amber, w
+    }
   }
 
   if (BusManager::_useABL) {
@@ -326,8 +335,10 @@ uint32_t IRAM_ATTR BusDigital::getPixelColor(unsigned pix) const {
     }
   }
   if (_type == TYPE_WS2812_WWA) {
-    uint8_t w = R(c) | G(c);
-    c = RGBW32(w, w, 0, w);
+    // SK6812 WWA fork: reconstruct white from max of WW/CW/Amber channels (instead of bitwise OR which loses information)
+    uint8_t w = R(c) > G(c) ? R(c) : G(c);
+    if (B(c) > w) w = B(c);
+    c = RGBW32(R(c), G(c), B(c), w);
   }
   return c;
 }
@@ -365,7 +376,7 @@ std::vector<LEDType> BusDigital::getLEDTypes() {
     {TYPE_SM16825,       "D",  PSTR("SM16825 RGBCW")},
     {TYPE_WS2812_1CH_X3, "D",  PSTR("WS2811 White")},
     //{TYPE_WS2812_2CH_X3, "D",  PSTR("WS281x CCT")}, // not implemented
-    {TYPE_WS2812_WWA,    "D",  PSTR("WS281x WWA")}, // amber ignored
+    {TYPE_WS2812_WWA,    "D",  PSTR("SK6812 WWA")},
     {TYPE_WS2801,        "2P", PSTR("WS2801")},
     {TYPE_APA102,        "2P", PSTR("APA102")},
     {TYPE_LPD8806,       "2P", PSTR("LPD8806")},

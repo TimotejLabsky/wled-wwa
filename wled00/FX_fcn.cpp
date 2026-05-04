@@ -1011,16 +1011,22 @@ void Segment::refreshLightCapabilities() const {
       const Bus *bus = BusManager::getBus(b);
       if (!bus || !bus->isOk()) break;
       if (bus->containsPixel(index)) {
-        if (bus->hasRGB() || (strip.cctFromRgb && bus->hasCCT())) capabilities |= SEG_CAPABILITY_RGB;
-        if (!strip.cctFromRgb && bus->hasCCT())                   capabilities |= SEG_CAPABILITY_CCT;
-        if (strip.correctWB && (bus->hasRGB() || bus->hasCCT()))  capabilities |= SEG_CAPABILITY_CCT; //white balance correction (CCT slider)
-        if (bus->hasWhite()) {
-          unsigned aWM = Bus::getGlobalAWMode() == AW_GLOBAL_DISABLED ? bus->getAutoWhiteMode() : Bus::getGlobalAWMode();
-          bool whiteSlider = (aWM == RGBW_MODE_DUAL || aWM == RGBW_MODE_MANUAL_ONLY); // white slider allowed
-          // if auto white calculation from RGB is active (Accurate/Brighter), force RGB controls even if there are no RGB busses
-          if (!whiteSlider) capabilities |= SEG_CAPABILITY_RGB;
-          // if auto white calculation from RGB is disabled/optional (None/Dual), allow white channel adjustments
-          if ( whiteSlider) capabilities |= SEG_CAPABILITY_W;
+        // SK6812 WWA fork: WWA strips report W + CCT only, never RGB (HA shows brightness + temperature slider)
+        if (bus->getType() == TYPE_WS2812_WWA) {
+          capabilities |= SEG_CAPABILITY_W;
+          capabilities |= SEG_CAPABILITY_CCT;
+        } else {
+          if (bus->hasRGB() || (strip.cctFromRgb && bus->hasCCT())) capabilities |= SEG_CAPABILITY_RGB;
+          if (!strip.cctFromRgb && bus->hasCCT())                   capabilities |= SEG_CAPABILITY_CCT;
+          if (strip.correctWB && (bus->hasRGB() || bus->hasCCT()))  capabilities |= SEG_CAPABILITY_CCT; //white balance correction (CCT slider)
+          if (bus->hasWhite()) {
+            unsigned aWM = Bus::getGlobalAWMode() == AW_GLOBAL_DISABLED ? bus->getAutoWhiteMode() : Bus::getGlobalAWMode();
+            bool whiteSlider = (aWM == RGBW_MODE_DUAL || aWM == RGBW_MODE_MANUAL_ONLY); // white slider allowed
+            // if auto white calculation from RGB is active (Accurate/Brighter), force RGB controls even if there are no RGB busses
+            if (!whiteSlider) capabilities |= SEG_CAPABILITY_RGB;
+            // if auto white calculation from RGB is disabled/optional (None/Dual), allow white channel adjustments
+            if ( whiteSlider) capabilities |= SEG_CAPABILITY_W;
+          }
         }
         break;
       }

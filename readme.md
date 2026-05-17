@@ -12,7 +12,7 @@
 
 # WLED WWA Fork ✨
 
-> **This is a fork of [WLED](https://github.com/Aircoookie/WLED) with full SK6812 WWA (Warm White + Cool White + Amber) support.**
+> **This is a fork of [WLED](https://github.com/Aircoookie/WLED) maintained solely to add full SK6812 WWA (Warm White + Cool White + Amber) support. No other features are added or supported here — for the general WLED project, use the upstream repo.**
 >
 > Upstream WLED's WWA type (21) ignores the amber channel (hardcoded to 0). This fork adds proper amber blending based on color temperature — amber LEDs activate at warm color temperatures, providing a richer warm glow. The fork also reports correct segment capabilities (W + CCT only, no RGB) so Home Assistant renders a brightness + color-temperature slider instead of a color wheel.
 
@@ -23,15 +23,16 @@
 - **Label updated** from "WS281x WWA" to "SK6812 WWA"
 - **`getPixelColor` fixed** — reconstructs white from max of all 3 channels instead of discarding amber
 
-### Versioning
+### Branches
 
-Current build: `16.0.0-wwa` (rebased on upstream WLED v16.0.0). Earlier `0.15.x-wwa` builds remain on the legacy `wwa-support` branch.
+- **`main`** — current WWA fork, tracks upstream WLED `16_x` + WWA patches. Build version `16.0.0-wwa`.
+- **`wwa-support-v16`** — same as `main` (legacy development branch, kept as a mirror).
+- **`wwa-support`** — legacy `0.15.x-wwa` builds on pre-v16 base.
 
-### Pre-built binary
-
-Build from the `wwa-support-v16` branch with `pio run -e esp32dev`, then flash OTA:
+### Build & flash
 
 ```
+pio run -e esp32dev
 curl -F "update=@build_output/release/WLED_16.0.0-wwa_ESP32.bin" http://<wled-ip>/update
 ```
 

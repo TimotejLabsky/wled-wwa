@@ -129,7 +129,6 @@ void stateUpdated(byte callMode) {
     jsonTransitionOnce = false;
     transitionActive = false;
     applyFinalBri();
-    strip.trigger();
     // restore the configured default: a one-time "tt":0, an individual-LED ("i") command or a UDP-synced transition of 0
     // would otherwise leave the strip transition at 0 forever, making all subsequent fades instant
     strip.setTransition(transitionDelay);
@@ -266,7 +265,10 @@ void handleNightlight() {
       {
         for (unsigned i=0; i<4; i++) colPri[i] = colNlT[i]+ ((colSec[i] - colNlT[i])*nper);   // fading from actual color to secondary color
       }
+      uint16_t transitionduration = strip.getTransition();
+      strip.setTransition(0); // temporary disable transition and set color & brightness directly, (hacky fix for #5620)
       colorUpdated(CALL_MODE_NO_NOTIFY);
+      strip.setTransition(transitionduration); // restore transition time to previous value. Note: this needs proper fixing by disabling transitions completely in nightlight mode, reference implementation https://github.com/blazoncek/WLED/commit/c01a6b774969b652c30e383073958302042fd1f9
     }
     if (nper >= 1) //nightlight duration over
     {

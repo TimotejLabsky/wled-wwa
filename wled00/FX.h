@@ -882,6 +882,7 @@ class WS2812FX {
       service(),                                  // executes effect functions when due and calls strip.show()
       setCCT(uint16_t k),                         // sets global CCT (either in relative 0-255 value or in K)
       setBrightness(uint8_t b, bool direct = false),    // sets strip brightness
+      setBrightness16(uint16_t b16, bool direct = false), // sets strip brightness in 8.8 fixed point (0xFF00 = full); fraction rendered via spatial dithering on digital buses
       setRange(uint16_t i, uint16_t i2, uint32_t col),  // used for clock overlay
       purgeSegments(),                            // removes inactive segments from RAM (may incure penalty and memory fragmentation but reduces vector footprint)
       setMainSegmentId(unsigned n = 0),
@@ -1019,6 +1020,7 @@ class WS2812FX {
     volatile bool _suspend;
 
     uint8_t  _brightness;
+    uint8_t  _briFrac = 0; // fractional part of brightness (1/256 code steps), see setBrightness16()
     uint16_t _length;
     uint16_t _transitionDur;
 

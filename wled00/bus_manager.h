@@ -133,6 +133,7 @@ class Bus {
     virtual void     setStatusPixel(uint32_t c)                 {}
     virtual void     setPixelColor(unsigned pix, uint32_t c)    = 0;
     virtual void     setBrightness(uint8_t b)                   { _bri = b; };
+    virtual void     setBrightness16(uint16_t b16)              { setBrightness((b16 + 127) >> 8); } // 8.8 fixed point (0xFF00 = full); default: round to 8 bit
     virtual void     setColorOrder(uint8_t co)                  {}
     virtual uint32_t getPixelColor(unsigned pix) const          { return 0; }
     virtual size_t   getPins(uint8_t* pinArray = nullptr) const { return 0; }
@@ -255,6 +256,8 @@ class BusDigital : public Bus {
     bool canShow() const override;
     void setStatusPixel(uint32_t c) override;
     [[gnu::hot]] void setPixelColor(unsigned pix, uint32_t c) override;
+    void setBrightness(uint8_t b) override      { _bri = b; _briFrac = 0; }
+    void setBrightness16(uint16_t b16) override { _bri = b16 >> 8; _briFrac = b16 & 0xFF; }
     void setColorOrder(uint8_t colorOrder) override;
     [[gnu::hot]] uint32_t getPixelColor(unsigned pix) const override;
     uint8_t  getColorOrder() const override  { return _colorOrder; }
@@ -281,6 +284,7 @@ class BusDigital : public Bus {
     uint8_t  _pins[2];
     uint8_t  _iType;
     uint8_t  _driverType; // 0=RMT (default), 1=I2S
+    uint8_t  _briFrac = 0; // fractional brightness (1/256 code steps), rendered via spatial dithering in setPixelColor()
     uint16_t _frequencykHz;
     uint16_t _milliAmpsMax;
     uint8_t  _milliAmpsPerLed;
@@ -565,6 +569,7 @@ namespace BusManager {
   bool        canAllShow();
   inline void setStatusPixel(uint32_t c) { for (auto &bus : busses) bus->setStatusPixel(c);}
   inline void setBrightness(uint8_t b)   { for (auto &bus : busses) bus->setBrightness(b); }
+  inline void setBrightness16(uint16_t b16) { for (auto &bus : busses) bus->setBrightness16(b16); } // 8.8 fixed point (0xFF00 = full)
   // for setSegmentCCT(), cct can only be in [-1,255] range; allowWBCorrection will convert it to K
   // WARNING: setSegmentCCT() is a misleading name!!! much better would be setGlobalCCT() or just setCCT()
   void           setSegmentCCT(int16_t cct, bool allowWBCorrection = false);

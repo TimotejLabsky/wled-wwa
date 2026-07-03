@@ -63,12 +63,14 @@ byte scaledBri(byte in)
 }
 
 
+static byte briTFrac = 0; // fractional part of briT (1/256 code steps), rendered via spatial dithering during transitions
+
 //applies global temporary brightness (briT) to strip
 void applyBri() {
   if (realtimeOverride || !(realtimeMode && arlsForceMaxBri))
   {
     //DEBUG_PRINTF_P(PSTR("Applying strip brightness: %d (%d,%d)\n"), (int)briT, (int)bri, (int)briOld);
-    strip.setBrightness(briT);
+    strip.setBrightness16(((uint16_t)briT << 8) | briTFrac);
   }
 }
 
@@ -77,6 +79,7 @@ void applyBri() {
 void applyFinalBri() {
   briOld = bri;
   briT = bri;
+  briTFrac = 0;
   applyBri();
   strip.trigger(); // force one last update
 }
@@ -127,6 +130,9 @@ void stateUpdated(byte callMode) {
     transitionActive = false;
     applyFinalBri();
     strip.trigger();
+    // restore the configured default: a one-time "tt":0, an individual-LED ("i") command or a UDP-synced transition of 0
+    // would otherwise leave the strip transition at 0 forever, making all subsequent fades instant
+    strip.setTransition(transitionDelay);
   } else {
     if (transitionActive) {
       briOld = briT;
@@ -164,8 +170,16 @@ void handleTransitions() {
   //handle still pending interface update
   updateInterfaces(interfaceUpdateCallMode);
 
+  static unsigned long lastTransitionTick = 0;
+  unsigned long nowMs = millis();
+  unsigned long sinceTick = lastTransitionTick ? nowMs - lastTransitionTick : 0;
+  lastTransitionTick = nowMs;
   if (transitionActive && strip.getTransition() > 0) {
-    int ti = millis() - transitionStartTime;
+    // if the main loop stalled (flash write, Wi-Fi hiccup, ...) shift the transition anchor so the fade
+    // pauses for the stall instead of skipping ahead — a swallowed fade start reads as a jump to half brightness
+    if (sinceTick > 50) transitionStartTime += sinceTick - 25;
+    int ti = nowMs - transitionStartTime;
+    if (ti < 0) ti = 0; // guard: a state change processed during a stall can leave the anchor in the future
     int tr = strip.getTransition();
     if (ti/tr) {
       strip.setTransitionMode(false); // stop all transitions
@@ -176,10 +190,30 @@ void handleTransitions() {
       applyFinalBri();
       return;
     }
-    byte briTO = briT;
-    int deltaBri = (int)bri - (int)briOld;
-    briT = briOld + (deltaBri * ti / tr);
-    if (briTO != briT) applyBri();
+    byte briTO = briT, briTFracO = briTFrac;
+    if (gammaCorrectBri) {
+      // brightness values are already perceptual (gamma is applied in strip.setBrightness()), interpolate linearly
+      int deltaBri = (int)bri - (int)briOld;
+      briT = briOld + (deltaBri * ti / tr);
+      briTFrac = 0; // gamma LUT is 8 bit, no fractional brightness
+      if (briT == 0 && (bri || briOld)) briT = 1; // hold minimum brightness until the transition ends (prevents early blackout on fade-out and late pop-in on fade-in)
+    } else {
+      // interpolate in a perceptual (approx. gamma 2.0) domain with 12-bit precision so equal time steps
+      // give roughly equal perceived change, instead of a fade that jumps up quickly and then crawls
+      // (or lingers bright and drops abruptly when fading out)
+      uint32_t x = ((uint32_t)ti << 16) / tr; // transition progress, 0..65535
+      // fade-in additionally eases out (immediate onset, gentle arrival): a purely perceptual ramp from
+      // black spends its first third invisibly dark, which reads as a pause followed by a jump
+      if (bri > briOld) x = 65535 - (((65535 - x) * (65535 - x)) >> 16);
+      uint32_t p0 = sqrt32_bw((uint32_t)briOld * 255 * 256); // 0..4080, perceptual endpoints in 8.4 fixed point
+      uint32_t p1 = sqrt32_bw((uint32_t)bri    * 255 * 256);
+      uint32_t p  = p0 + (((int32_t)(p1 - p0) * (int32_t)x) >> 16);
+      uint32_t b16 = (p * p + 127) / 255; // back to linear light in 8.8 fixed point (0xFF00 = full)
+      if (b16 == 0 && (bri || briOld)) b16 = 1; // keep a trace of light until the transition ends (prevents early blackout on fade-out and late pop-in on fade-in)
+      briT = b16 >> 8;
+      briTFrac = b16 & 0xFF; // fraction is rendered by spatial dithering -> sub-code fade resolution at low brightness
+    }
+    if (briTO != briT || briTFracO != briTFrac) applyBri();
   }
 }
 

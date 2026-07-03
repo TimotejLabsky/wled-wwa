@@ -1764,13 +1764,26 @@ void WS2812FX::setCCT(uint16_t k) {
 // direct=true either expects the caller to call show() themselves (realtime modes) or be ok waiting for the next frame for the change to apply
 // direct=false immediately triggers an effect redraw
 void WS2812FX::setBrightness(uint8_t b, bool direct) {
-  if (gammaCorrectBri) b = gamma8(b);
-  if (_brightness == b) return;
+  setBrightness16((uint16_t)b << 8, direct);
+}
+
+// b16 is brightness in 8.8 fixed point (0xFF00 = full); the fractional part is rendered via spatial dithering on digital buses
+void WS2812FX::setBrightness16(uint16_t b16, bool direct) {
+  uint8_t b = b16 >> 8;
+  if (gammaCorrectBri && b) { // never gamma-correct a nonzero brightness to full off (gamma8() maps ~1-12 to 0, causing dark pop-in/blackout at fade edges)
+    b = gamma8(b);
+    if (!b) b = 1;
+    b16 = (uint16_t)b << 8; // gamma LUT is 8 bit: drop the fractional part
+  }
+  if (_brightness == b && _briFrac == (uint8_t)b16) return;
   _brightness = b;
+  _briFrac = (uint8_t)b16;
   if (_brightness == 0) { //unfreeze all segments on power off
     for (const Segment &seg : _segments) seg.freeze = false; // freeze is mutable
   }
-  BusManager::setBrightness(scaledBri(b));
+  uint32_t scaled = ((uint32_t)b16 * briMultiplier) / 100; // 16-bit variant of scaledBri()
+  if (scaled > 0xFF00) scaled = 0xFF00;
+  BusManager::setBrightness16(scaled);
   if (!direct) {
     unsigned long t = millis();
     if (t - _lastShow > min(_frametime, uint16_t(FRAMETIME_FIXED))) trigger(); //apply brightness change immediately if no refresh soon, but don't speed up above 42fps

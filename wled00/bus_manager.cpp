@@ -232,18 +232,15 @@ void BusDigital::applyBriLimit(uint8_t newBri) {
     for (unsigned i = 0; i < hwLen; i++) {
       uint8_t co = _colorOrderMap.getPixelColorOrder(i+_start, _colorOrder); // need to revert color order for correct color scaling and CCT calc in case white is swapped
       uint32_t c = PolyBus::getPixelColor(_busPtr, _iType, i, co); // Note: if ABL would be calculated as a seperate loop (as it was before) it is slower but could use original color, making it more color-accurate
-      uint8_t cctWW = 0, cctCW = 0;
-      if (hasCCT()) {
+      // SK6812 WWA fork: skip CCT recalculation for WWA — the buffer already holds physical WW/CW/A in
+      // the RGB slots (readback W is 0, so calculateCCT() would yield garbage); color_fade() below scales them directly
+      if (hasCCT() && _type != TYPE_WS2812_WWA) {
+        uint8_t cctWW, cctCW;
         Bus::calculateCCT(c, cctWW, cctCW); // calculate CCT before fade (more accurate) | Note: if using "accurate" white calculation mode, approximateKelvinFromRGB can be very inaccurate (white is subtracted)
         wwcw = ((cctCW + 1) * newBri) & 0xFF00; // apply brightness to CCT (leave it in upper byte for 16bit NeoPixelBus value)
         wwcw |= ((cctWW + 1) * newBri) >> 8;
       }
       c = color_fade(c, newBri, true); // apply additional dimming  note: using inline version is a bit faster but overhead of getPixelColor() dominates the speed impact by far
-      if (hasCCT() && _type == TYPE_WS2812_WWA) {
-        // SK6812 WWA fork: derive amber from CCT delta (raw cctWW/cctCW), use brightness-scaled WW/CW from wwcw
-        uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
-        c = RGBW32(wwcw & 0xFF, wwcw >> 8, amber, W(c));
-      }
       PolyBus::setPixelColor(_busPtr, _iType, i, c, co, wwcw); // repaint all pixels with new brightness
     }
   }
@@ -274,18 +271,23 @@ void BusDigital::setStatusPixel(uint32_t c) {
 // note: using WLED_O2_ATTR makes this function ~7% faster at the expense of 600 bytes of flash
 void IRAM_ATTR BusDigital::setPixelColor(unsigned pix, uint32_t c) {
   if (!_valid) return;
+  // SK6812 WWA fork: spatial dithering — spread fractional (1/256 code) brightness across pixels using a
+  // fixed per-pixel threshold; the pattern is static in time (no flicker) and each pixel steps monotonically during fades
+  unsigned bri = _bri;
+  if (_briFrac && bri < 255 && (uint8_t)(pix * 157) < _briFrac) bri++;
   if (Bus::_cct >= 1900) c = colorBalanceFromKelvin(Bus::_cct, c); //color correction from CCT
   uint8_t cctWW = 0, cctCW = 0;
   uint16_t wwcw = 0;
   if (hasWhite()) c = autoWhiteCalc(c, cctWW, cctCW);
-  c = color_fade(c, _bri, true); // apply brightness
+  c = color_fade(c, bri, true); // apply brightness
 
   if (hasCCT()) {
-    wwcw = ((cctCW + 1) * _bri) & 0xFF00; // apply brightness to CCT (store CW in upper byte)
-    wwcw |= ((cctWW + 1) * _bri) >> 8;
+    wwcw = ((cctCW + 1) * bri) & 0xFF00; // apply brightness to CCT (store CW in upper byte)
+    wwcw |= ((cctWW + 1) * bri) >> 8;
     if (_type == TYPE_WS2812_WWA) {
-      // SK6812 WWA fork: derive amber from CCT delta (raw cctWW/cctCW), use brightness-scaled WW/CW from wwcw
-      uint8_t amber = (cctWW > cctCW) ? ((uint16_t)(cctWW - cctCW) * W(c)) / 255 : 0;
+      // SK6812 WWA fork: derive amber from the CCT delta, applying brightness with the same rounding
+      // as WW/CW above so all three channels step in lockstep during fades (no CCT shimmer/dropout)
+      uint8_t amber = (cctWW > cctCW) ? ((cctWW - cctCW + 1) * bri) >> 8 : 0;
       c = RGBW32(wwcw & 0xFF, wwcw >> 8, amber, W(c)); // ww, cw, amber, w
     }
   }

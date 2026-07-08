@@ -43,7 +43,8 @@ the version from `-dev-wwa` to `-wwa`, gets tagged, and `main` keeps its dev ver
 
 1. Ensure `main` contains the upstream release tag (see above), builds, and is pushed.
 2. Cut the release commit and tag; CI (`release.yml`) triggers on any tag push, builds
-   all environments (~1 h), and creates a **draft** GitHub Release with binaries:
+   all environments (~5 min with warm caches), and creates a **draft** GitHub Release
+   with binaries:
 
 ```sh
 git checkout --detach main

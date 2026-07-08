@@ -75,6 +75,11 @@ jobs:
     - name: Install PlatformIO
       run: pip install -r requirements.txt
 
+    # build_output is in the cache path above; a restored cache can contain
+    # binaries from a previous version, which the upload glob would then attach
+    # to the wrong release. Clear it so only this run's binaries are uploaded.
+    - name: Clean stale build outputs
+      run: rm -rf build_output
     - name: Build firmware
       run: pio run -e ${{ matrix.environment }}
     - name: Get artifact name from bin filename

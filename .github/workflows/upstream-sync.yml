@@ -14,10 +14,10 @@
 #
 # Plain git, no LLM; runs on the home-cluster ARC runner (shared with /oc, so it
 # queues behind a running agent). The runner image has no gh CLI: API calls use
-# curl + jq. GITHUB_TOKEN may not push commits that touch .github/workflows:
-# without an UPSTREAM_SYNC_TOKEN secret (fine-grained PAT, wled-wwa only:
-# contents, pull-requests, workflows read/write) upstream workflow changes are
-# left out and listed in the PR. With the PAT the PR also triggers build CI.
+# curl + jq. Git and PRs use the UPSTREAM_SYNC_TOKEN secret only (fine-grained
+# PAT, wled-wwa only: contents, pull-requests, workflows RW; expires 2027-10-02):
+# GITHUB_TOKEN can't push upstream's .github/workflows changes and its PRs
+# don't trigger build CI. GITHUB_TOKEN only posts the reply comments.
 name: upstream-sync
 
 on:
@@ -37,36 +37,44 @@ jobs:
     runs-on: arc-runner-wled-wwa
     timeout-minutes: 90   # incl. queue wait behind an /oc run
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       issues: write
     env:
-      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-      HAS_PAT: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
+      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+      COMMENT_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number }}
       COMMENT: ${{ github.event.comment.body }}
       INPUT_BRANCH: ${{ inputs.branch }}
     steps:
+      - name: Require UPSTREAM_SYNC_TOKEN
+        run: |
+          [ -n "$GH_TOKEN" ] && exit 0
+          msg="upstream-sync: the \`UPSTREAM_SYNC_TOKEN\` secret is missing or expired; recreate it (RELEASE.md)."
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          [ -z "$ISSUE" ] || curl -fsS -X POST -H "Authorization: Bearer $COMMENT_TOKEN" \
+            "https://api.github.com/repos/$REPO/issues/$ISSUE/comments" -d "$(jq -n --arg b "$msg" '{body: $b}')" > /dev/null
+          exit 1
+
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
 
       - name: Merge upstream and open PR
         run: |
           set -euo pipefail
           NOTE=""
-          api() {  # api METHOD PATH [JSON]
-            curl -fsS -X "$1" -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+          api() {  # api METHOD PATH [JSON]; TOKEN overrides the PAT
+            curl -fsS -X "$1" -H "Authorization: Bearer ${TOKEN:-$GH_TOKEN}" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$REPO/$2" ${3:+-d "$3"}
           }
           reply() {
             local msg="$1"
             [ -z "$NOTE" ] || msg=$(printf '%s\n\n%s' "$1" "$NOTE")
             echo "$msg" >> "$GITHUB_STEP_SUMMARY"
-            [ -z "$ISSUE" ] || api POST "issues/$ISSUE/comments" "$(jq -n --arg b "$msg" '{body: $b}')" > /dev/null || true
+            [ -z "$ISSUE" ] || TOKEN=$COMMENT_TOKEN api POST "issues/$ISSUE/comments" "$(jq -n --arg b "$msg" '{body: $b}')" > /dev/null || true
           }
 
           B=${INPUT_BRANCH:-$(printf '%s\n' "$COMMENT" | head -1 | awk '{print $2}')}
@@ -136,18 +144,8 @@ jobs:
             git add -A
           fi
 
-          SKIPPED=""
-          if [ "$HAS_PAT" != "true" ]; then
-            SKIPPED=$(git diff --cached --name-only main -- .github/workflows)
-            for f in $SKIPPED; do
-              if git cat-file -e "main:$f" 2>/dev/null; then git checkout main -- "$f"; else git rm -q --cached "$f"; rm -f "$f"; fi
-            done
-          fi
-
           if [ -n "$CONFLICTS" ]; then
             git commit -q --no-edit -m "$MSG (UNRESOLVED CONFLICTS)"
-          elif [ -n "$SKIPPED" ]; then
-            git commit -q --amend --no-edit
           fi
 
           git push -q origin "$BR"
@@ -166,12 +164,6 @@ jobs:
             if [ -n "$BOTH" ]; then
               echo "### Files changed on both sides (check the fork delta survived)"
               printf -- '- `%s`\n' $BOTH
-              echo
-            fi
-            if [ -n "$SKIPPED" ]; then
-              echo "### Upstream workflow changes left out"
-              echo "GITHUB_TOKEN can't push workflow files; add an \`UPSTREAM_SYNC_TOKEN\` secret to include them:"
-              printf -- '- `%s`\n' $SKIPPED
               echo
             fi
             echo "<details><summary>Upstream commits</summary>"

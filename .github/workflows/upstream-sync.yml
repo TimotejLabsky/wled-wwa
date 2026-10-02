@@ -5,7 +5,9 @@
 # so RELEASE.md says to merge the tag itself). Merges it into a fresh
 # `upstream-sync/<ref>-<sha>` branch and opens a PR into main with a real merge
 # commit (merge it with a merge commit, never squash). Every reply also lists
-# upstream release tags of the fork's major version that main doesn't contain.
+# upstream release tags of the fork's major version that main doesn't contain,
+# and flags a release of the next major. Refs of a different major than main
+# (e.g. upstream main = 17.x) are refused: crossing a major is a port.
 #
 # Conflicts are committed WITH markers into a draft PR; resolve them there by
 # commenting `/oc resolve the merge conflicts` (opencode.yml) or by hand.
@@ -89,6 +91,13 @@ jobs:
           if [ -n "$NEW_TAGS" ]; then
             NOTE="📦 Upstream release tag(s) not yet in main: $(printf '`%s` ' $NEW_TAGS)— sync with \`/upstream <tag>\`."
           fi
+          NEXT=$((MAJOR + 1))
+          NEXT_REL=$(git ls-remote --tags --refs upstream "v$NEXT.*" | awk -v re="^v${NEXT}[.][0-9]+[.][0-9]+$" '
+              { r = $2; sub("refs/tags/", "", r); if (r ~ re) print r }' | sort -V | tail -1)
+          if [ -n "$NEXT_REL" ]; then
+            MAJ_NOTE="🚀 Upstream released \`$NEXT_REL\`, a new major: that's a port on a \`wwa-$NEXT\` branch, not a sync (RELEASE.md, \"Porting to a new major\")."
+            NOTE=$(printf '%s\n%s' "$NOTE" "$MAJ_NOTE" | sed '/^$/d')
+          fi
 
           if git ls-remote --exit-code --tags upstream "refs/tags/$B" > /dev/null; then
             KIND=tag
@@ -100,6 +109,11 @@ jobs:
           fi
 
           UP=$(git rev-parse "upstream/$B^{commit}"); SHORT=${UP:0:7}
+          UP_MAJOR=$(git show "$UP:package.json" | jq -r .version | cut -d. -f1)
+          if [ "$UP_MAJOR" != "$MAJOR" ]; then
+            reply "wled/WLED $KIND \`$B\` is version $UP_MAJOR.x but main is $MAJOR.x. Crossing a major is a port on a \`wwa-$UP_MAJOR\` branch, not a sync into main (RELEASE.md, \"Porting to a new major\")."
+            exit 1
+          fi
           BEHIND=$(git rev-list --count --no-merges "HEAD..$UP")
           if [ "$BEHIND" -eq 0 ]; then
             reply "main already contains wled/WLED $KIND \`$B\` @ \`$SHORT\`; nothing to sync."; exit 0

@@ -22,7 +22,9 @@ Mirrors upstream's convention: dev builds carry `-dev`, releases never do.
 
 Merge `16_x` tips freely into `main` for fixes; merge upstream **release tags** when
 one exists (upstream cuts them as side commits off `16_x`, so they don't arrive via
-the branch):
+the branch). Normally comment `/upstream` or `/upstream v16.0.2` on the pinned
+"Upstream sync" issue: it opens a merge PR (merge it with a **merge commit**, never
+squash) and flags unmerged upstream releases. By hand:
 
 ```sh
 git fetch upstream --tags
@@ -57,11 +59,45 @@ git checkout main
 
 3. Verify on the strip (below), then publish the draft release manually on GitHub.
 
-## When upstream 17.x lands
+## Porting to a new major (17.x)
 
-The fork tracks `16_x`. Upstream `main` is already `17.0.0-dev` with large refactors
-(`new-settings`, `http-api-refactor`) that likely touch the fork's delta files —
-moving to 17.x will be a deliberate porting task, not a routine merge.
+`main` tracks one upstream major at a time. Crossing a major is a **port on its own
+branch**, not a sync: `/upstream` refuses refs of a different major and flags an upstream
+`v17.x.y` release with a 🚀 line. Upstream `main` is `17.0.0-devV5`: ESP-IDF 5 (Tasmota
+Arduino Core 3.3 / IDF 5.5), ~650 commits beyond `16_x`.
+
+Trial merge of upstream `main` into this fork (2026-10-02): conflicts in ~20 files, but
+almost all are upstream's own `16_x`-vs-`main` divergence (cherry-picked fixes, CI,
+docs, `platformio.ini`) — take upstream's side there. Fork-specific hunks:
+- `bus_manager.cpp`: upstream 17 has its own `TYPE_WS2812_WWA` entry labelled
+  `"WS281x WWA" // amber ignored` — keep the fork's `SK6812 WWA` label and amber code.
+- `led.cpp`: the fork's "restore `transitionDelay` after a one-time `tt:0`" fix collides
+  with an upstream restructure — re-check whether 17 still needs it.
+- `FX_fcn.cpp`: ledmap parser rewritten upstream (not fork code) — take upstream.
+
+Size: pure upstream 17-dev `esp32dev` = 1,335,499 B, 84.9% of the 1.5 MB app partition,
+same partition table (16.0.1-dev-wwa: 83%). Fits OTA; partition change not needed.
+
+Procedure, once upstream tags `v17.0.0` (not before — dev churn is high):
+
+```sh
+git fetch upstream --tags
+git switch -c wwa-17 main
+git merge v17.0.0                     # resolve: upstream side except the fork delta
+# package.json: 17.0.0-dev-wwa
+pio run -e esp32dev                   # IDF 5 toolchain downloads on first build
+```
+
+1. Open a PR `wwa-17` → `main` (merge commit). Check the fork delta survived and V5
+   behavior of the digital LED driver with the WWA bus (amber, ABL repaint, dithering).
+2. Before flashing: read upstream's 17.0 release notes for the 16 → 17 OTA path
+   (IDF 4 → 5 app on an old bootloader) and any config migration (`new-settings`);
+   back up `cfg.json` + `presets.json`. Keep a USB cable ready for the first flash.
+3. Run the full strip checklist below on `wwa-17`.
+4. Merge into `main`, change the `/upstream` default branch from `16_x` to `17_x`
+   (upstream's release branch) in `upstream-sync.yml`, update this file's `16_x` mentions.
+5. Release `v17.0.0-wwa.1` as usual. No long-lived `wwa-16` branch unless a 16.x fix
+   must ship after the switch.
 
 ## Verifying on the strip
 

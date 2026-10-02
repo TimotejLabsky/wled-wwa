@@ -1,0 +1,143 @@
+# Upstream sync: comment `/upstream` (or `/upstream main`) on any issue or PR,
+# or run `gh workflow run upstream-sync -R TimotejLabsky/wled-wwa -f branch=16_x`.
+# Merges wled/WLED <branch> (default 16_x, the v16 release line this fork is
+# based on) into a fresh `upstream-sync/<branch>-<sha>` branch and opens a PR
+# into main with a real merge commit, so later syncs only see new commits.
+#
+# Conflicts are committed WITH markers into a draft PR; resolve them there by
+# commenting `/oc resolve the merge conflicts, keep the WWA amber/CCT and
+# brightness-dither changes` (opencode.yml) or by hand.
+#
+# Plain git, no LLM, so it runs on GitHub-hosted runners. GITHUB_TOKEN may not
+# push commits that touch .github/workflows: without an UPSTREAM_SYNC_TOKEN
+# secret (fine-grained PAT, wled-wwa only: contents, pull-requests, workflows
+# read/write) upstream workflow changes are left out and listed in the PR.
+# With the PAT the PR also triggers the build workflows.
+name: upstream-sync
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: wled/WLED branch to merge
+        default: 16_x
+
+jobs:
+  sync:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.comment.user.login == 'TimotejLabsky' && startsWith(github.event.comment.body, '/upstream'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      HAS_PAT: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+      COMMENT: ${{ github.event.comment.body }}
+      INPUT_BRANCH: ${{ inputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream and open PR
+        run: |
+          set -euo pipefail
+          reply() {
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            [ -n "$ISSUE" ] && gh api "repos/$REPO/issues/$ISSUE/comments" -f body="$1" > /dev/null || true
+          }
+
+          B=${INPUT_BRANCH:-$(printf '%s\n' "$COMMENT" | head -1 | awk '{print $2}')}
+          B=${B:-16_x}
+          case "$B" in *[!A-Za-z0-9._/-]*) reply "Invalid branch name \`$B\`."; exit 1;; esac
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/wled/WLED.git
+          if ! git fetch --no-tags upstream "$B"; then reply "Upstream branch \`$B\` not found in wled/WLED."; exit 1; fi
+
+          UP=$(git rev-parse "upstream/$B"); SHORT=${UP:0:7}
+          BEHIND=$(git rev-list --count --no-merges "HEAD..upstream/$B")
+          if [ "$BEHIND" -eq 0 ]; then
+            reply "main already contains wled/WLED \`$B\` @ \`$SHORT\`; nothing to sync."; exit 0
+          fi
+
+          BR="upstream-sync/$B-$SHORT"
+          if git ls-remote --exit-code --heads origin "$BR" > /dev/null; then
+            PR=$(gh pr list -R "$REPO" --head "$BR" --state all --json url -q '.[0].url')
+            reply "A sync for \`$B\` @ \`$SHORT\` already exists: ${PR:-branch $BR}"; exit 0
+          fi
+
+          git switch -c "$BR"
+          BASE=$(git merge-base HEAD "upstream/$B")
+          BOTH=$(comm -12 <(git diff --name-only "$BASE" HEAD | sort) <(git diff --name-only "$BASE" "upstream/$B" | sort))
+          MSG="Merge wled/WLED $B ($SHORT) into wled-wwa"
+
+          CONFLICTS=""
+          if ! git merge --no-ff --no-edit -m "$MSG" "upstream/$B"; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            git add -A
+          fi
+
+          SKIPPED=""
+          if [ "$HAS_PAT" != "true" ]; then
+            SKIPPED=$(git diff --cached --name-only main -- .github/workflows)
+            for f in $SKIPPED; do
+              if git cat-file -e "main:$f" 2>/dev/null; then git checkout main -- "$f"; else git rm -q --cached "$f"; rm -f "$f"; fi
+            done
+          fi
+
+          if [ -n "$CONFLICTS" ]; then
+            git commit -q --no-edit -m "$MSG (UNRESOLVED CONFLICTS)"
+          elif [ -n "$SKIPPED" ]; then
+            git commit -q --amend --no-edit
+          fi
+
+          git push -q origin "$BR"
+
+          {
+            echo "Merges **wled/WLED \`$B\`** @ [\`$SHORT\`](https://github.com/wled/WLED/commit/$UP) into \`main\`: **$BEHIND** new upstream commits."
+            echo
+            if [ -n "$CONFLICTS" ]; then
+              echo "### ⚠️ Unresolved conflicts (committed with markers)"
+              printf -- '- `%s`\n' $CONFLICTS
+              echo
+              echo "Resolve with a comment on this PR, e.g. \`/oc resolve the merge conflicts, keeping the WWA amber/CCT and brightness-dither changes\`, then mark ready."
+              echo
+            fi
+            if [ -n "$BOTH" ]; then
+              echo "### Files changed on both sides (check the WWA patches survived)"
+              printf -- '- `%s`\n' $BOTH
+              echo
+            fi
+            if [ -n "$SKIPPED" ]; then
+              echo "### Upstream workflow changes left out"
+              echo "GITHUB_TOKEN can't push workflow files; add an \`UPSTREAM_SYNC_TOKEN\` secret to include them:"
+              printf -- '- `%s`\n' $SKIPPED
+              echo
+            fi
+            echo "<details><summary>Upstream commits</summary>"
+            echo
+            git log --no-merges --format='- %h %s' "main..upstream/$B" | head -200
+            echo
+            echo "</details>"
+          } > "$RUNNER_TEMP/body.md"
+
+          DRAFT=""; [ -n "$CONFLICTS" ] && DRAFT="--draft"
+          URL=$(gh pr create -R "$REPO" --base main --head "$BR" $DRAFT \
+                  --title "Merge upstream wled/WLED $B ($SHORT)" --body-file "$RUNNER_TEMP/body.md")
+          if [ -n "$CONFLICTS" ]; then
+            reply "Opened draft $URL: $BEHIND upstream commits, **$(echo "$CONFLICTS" | wc -w) conflicted file(s)**."
+          else
+            reply "Opened $URL: $BEHIND upstream commits, merged cleanly."
+          fi

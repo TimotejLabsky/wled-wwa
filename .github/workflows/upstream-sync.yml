@@ -8,7 +8,9 @@
 # commenting `/oc resolve the merge conflicts, keep the WWA amber/CCT and
 # brightness-dither changes` (opencode.yml) or by hand.
 #
-# Plain git, no LLM, so it runs on GitHub-hosted runners. GITHUB_TOKEN may not
+# Plain git, no LLM; runs on the home-cluster ARC runner (shared with /oc, so it
+# queues behind a running agent). The runner image has no gh CLI: API calls use
+# curl + jq. GITHUB_TOKEN may not
 # push commits that touch .github/workflows: without an UPSTREAM_SYNC_TOKEN
 # secret (fine-grained PAT, wled-wwa only: contents, pull-requests, workflows
 # read/write) upstream workflow changes are left out and listed in the PR.
@@ -29,8 +31,8 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.comment.user.login == 'TimotejLabsky' && startsWith(github.event.comment.body, '/upstream'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: arc-runner-wled-wwa
+    timeout-minutes: 90   # incl. queue wait behind an /oc run
     permissions:
       contents: write
       pull-requests: write
@@ -52,9 +54,13 @@ jobs:
       - name: Merge upstream and open PR
         run: |
           set -euo pipefail
+          api() {  # api METHOD PATH [JSON]
+            curl -fsS -X "$1" -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/$2" ${3:+-d "$3"}
+          }
           reply() {
             echo "$1" >> "$GITHUB_STEP_SUMMARY"
-            [ -n "$ISSUE" ] && gh api "repos/$REPO/issues/$ISSUE/comments" -f body="$1" > /dev/null || true
+            [ -z "$ISSUE" ] || api POST "issues/$ISSUE/comments" "$(jq -n --arg b "$1" '{body: $b}')" > /dev/null || true
           }
 
           B=${INPUT_BRANCH:-$(printf '%s\n' "$COMMENT" | head -1 | awk '{print $2}')}
@@ -74,7 +80,7 @@ jobs:
 
           BR="upstream-sync/$B-$SHORT"
           if git ls-remote --exit-code --heads origin "$BR" > /dev/null; then
-            PR=$(gh pr list -R "$REPO" --head "$BR" --state all --json url -q '.[0].url')
+            PR=$(api GET "pulls?state=all&head=${REPO%%/*}:$BR" | jq -r '.[0].html_url // empty')
             reply "A sync for \`$B\` @ \`$SHORT\` already exists: ${PR:-branch $BR}"; exit 0
           fi
 
@@ -133,9 +139,10 @@ jobs:
             echo "</details>"
           } > "$RUNNER_TEMP/body.md"
 
-          DRAFT=""; [ -n "$CONFLICTS" ] && DRAFT="--draft"
-          URL=$(gh pr create -R "$REPO" --base main --head "$BR" $DRAFT \
-                  --title "Merge upstream wled/WLED $B ($SHORT)" --body-file "$RUNNER_TEMP/body.md")
+          DRAFT=false; [ -z "$CONFLICTS" ] || DRAFT=true
+          URL=$(api POST pulls "$(jq -n --arg h "$BR" --arg t "Merge upstream wled/WLED $B ($SHORT)" \
+                  --rawfile b "$RUNNER_TEMP/body.md" --argjson d "$DRAFT" \
+                  '{base: "main", head: $h, title: $t, body: $b, draft: $d}')" | jq -r .html_url)
           if [ -n "$CONFLICTS" ]; then
             reply "Opened draft $URL: $BEHIND upstream commits, **$(echo "$CONFLICTS" | wc -w) conflicted file(s)**."
           else
